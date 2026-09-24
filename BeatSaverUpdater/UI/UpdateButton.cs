@@ -9,6 +9,7 @@ using BeatSaverUpdater.Migration;
 using HMUI;
 using IPA.Utilities;
 using IPA.Utilities.Async;
+using Legato;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -21,6 +22,7 @@ namespace BeatSaverUpdater.UI
     {
         private ClickableImage? image;
         private CancellationTokenSource? tokenSource;
+        private IDisposable? songsLoadedSubscription;
         private string? oldLevelHash;
         private string? downloadedLevelHash;
 
@@ -60,6 +62,7 @@ namespace BeatSaverUpdater.UI
 
         public void Dispose()
         {
+            songsLoadedSubscription?.Dispose();
             if (image != null)
             {
                 image.OnClickEvent -= Clicked;
@@ -182,7 +185,8 @@ namespace BeatSaverUpdater.UI
             downloadedLevelHash = await beatmapLevel.UpdateBeatmap(tokenSource.Token, popupModal);
             if (downloadedLevelHash != null)
             {
-                SongCore.Loader.SongsLoadedEvent += OnSongsLoaded;
+                songsLoadedSubscription?.Dispose();
+                songsLoadedSubscription = SongCoreLoaderEvents.SubscribeToSongsLoaded(OnSongsLoaded);
                 SongCore.Loader.Instance.RefreshSongs(false);
             }
         }
@@ -194,9 +198,10 @@ namespace BeatSaverUpdater.UI
             levelCollectionNavigationController.SelectLevel(beatmapLevel);
         }
 
-        private void OnSongsLoaded(SongCore.Loader _, System.Collections.Concurrent.ConcurrentDictionary<string, BeatmapLevel> __)
+        private void OnSongsLoaded()
         {
-            SongCore.Loader.SongsLoadedEvent -= OnSongsLoaded;
+            songsLoadedSubscription?.Dispose();
+            songsLoadedSubscription = null;
             var oldLevel = SongCore.Loader.GetLevelByHash(oldLevelHash ?? "");
             var downloadedLevel = SongCore.Loader.GetLevelByHash(downloadedLevelHash ?? "");
             if (downloadedLevel != null)
