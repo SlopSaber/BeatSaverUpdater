@@ -21,8 +21,10 @@ namespace BeatSaverUpdater.UI
     internal class UpdateButton : IInitializable, IDisposable
     {
         private ClickableImage? image;
-        private CancellationTokenSource? tokenSource;
+        private CancellationTokenSource? selectionSource;
+        private CancellationTokenSource? downloadSource;
         private IDisposable? songsLoadedSubscription;
+        private bool disposed;
         private string? oldLevelHash;
         private string? downloadedLevelHash;
 
@@ -62,16 +64,27 @@ namespace BeatSaverUpdater.UI
 
         public void Dispose()
         {
+            disposed = true;
+            standardLevelDetailViewController.didChangeContentEvent -= ContentChanged;
+            selectionSource?.Cancel();
+            downloadSource?.Cancel();
             songsLoadedSubscription?.Dispose();
             if (image != null)
             {
                 image.OnClickEvent -= Clicked;
+                if (image.sprite != null)
+                {
+                    UnityEngine.Object.Destroy(image.sprite.texture);
+                    UnityEngine.Object.Destroy(image.sprite);
+                }
+                UnityEngine.Object.Destroy(image.gameObject);
+                image = null;
             }
         }
 
         private async Task InitializeAsync()
         {
-            image = CreateImage();
+            var createdImage = image = CreateImage();
             using var mrs = Plugin.Metadata.Assembly.GetManifestResourceStream("BeatSaverUpdater.Images.Logo.png");
             using var ms = new MemoryStream();
             if (mrs != null)
@@ -79,10 +92,17 @@ namespace BeatSaverUpdater.UI
                 await mrs.CopyToAsync(ms);
             }
 
-            image.OnClickEvent += Clicked;
-            image.sprite = await BeatSaberMarkupLanguage.Utilities.LoadSpriteAsync(ms.ToArray());
-            image.sprite.texture.wrapMode = TextureWrapMode.Clamp;
-            image.gameObject.SetActive(false);
+            var sprite = await BeatSaberMarkupLanguage.Utilities.LoadSpriteAsync(ms.ToArray());
+            if (disposed)
+            {
+                UnityEngine.Object.Destroy(sprite.texture);
+                UnityEngine.Object.Destroy(sprite);
+                return;
+            }
+            createdImage.OnClickEvent += Clicked;
+            createdImage.sprite = sprite;
+            sprite.texture.wrapMode = TextureWrapMode.Clamp;
+            createdImage.gameObject.SetActive(false);
         }
 
         private ClickableImage CreateImage()
@@ -117,30 +137,38 @@ namespace BeatSaverUpdater.UI
         {
             if (contentType == StandardLevelDetailViewController.ContentType.OwnedAndReady)
             {
-                UnityMainThreadTaskScheduler.Factory.StartNew(() => BeatmapSelected(standardLevelDetailViewController.beatmapLevel));
+                _ = BeatmapSelected(standardLevelDetailViewController.beatmapLevel);
             }
         }
 
         private async Task BeatmapSelected(BeatmapLevel beatmapLevel)
         {
-            tokenSource?.Cancel();
-            tokenSource?.Dispose();
-            tokenSource = new CancellationTokenSource();
-
-            if (image != null)
+            selectionSource?.Cancel();
+            var source = selectionSource = new CancellationTokenSource();
+            try
             {
-                image.gameObject.SetActive(false);
-                if (beatmapLevel is { hasPrecalculatedData: false } && !beatmapLevel.levelID.EndsWith(" WIP"))
+                if (image != null)
                 {
-                    if (!PluginConfig.Instance.UseCache || songDetailsWrapper == null || !await songDetailsWrapper.SongExists(beatmapLevel.GetBeatmapHash()))
+                    image.gameObject.SetActive(false);
+                    if (beatmapLevel is { hasPrecalculatedData: false } && !beatmapLevel.levelID.EndsWith(" WIP"))
                     {
-                        var needsUpdate = await beatmapLevel.NeedsUpdate(tokenSource.Token);
-                        if (standardLevelDetailViewController.beatmapLevel == beatmapLevel)
+                        if (!PluginConfig.Instance.UseCache || songDetailsWrapper == null || !await songDetailsWrapper.SongExists(beatmapLevel.GetBeatmapHash()))
                         {
-                            image.gameObject.SetActive(needsUpdate);
+                            source.Token.ThrowIfCancellationRequested();
+                            var needsUpdate = await beatmapLevel.NeedsUpdate(source.Token);
+                            if (!disposed && !source.IsCancellationRequested && standardLevelDetailViewController.beatmapLevel == beatmapLevel)
+                                image.gameObject.SetActive(needsUpdate);
                         }
                     }
                 }
+            }
+            catch (OperationCanceledException) when (source.IsCancellationRequested) { }
+            catch (Exception ex) { Plugin.Log.Warn($"Checking map update failed: {ex}"); }
+            finally
+            {
+                if (selectionSource == source)
+                    selectionSource = null;
+                source.Dispose();
             }
         }
 
@@ -149,6 +177,8 @@ namespace BeatSaverUpdater.UI
             if (standardLevelDetailViewController.beatmapLevel is { hasPrecalculatedData: false } beatmapLevel)
             {
                 var newHash = (await beatmapLevel.GetBeatSaverBeatmap(CancellationToken.None))?.LatestVersion.Hash;
+                if (disposed || standardLevelDetailViewController.beatmapLevel != beatmapLevel)
+                    return;
 
                 if (newHash != null)
                 {
@@ -178,16 +208,41 @@ namespace BeatSaverUpdater.UI
 
         private async void UpdateRequested(BeatmapLevel beatmapLevel)
         {
-            tokenSource?.Cancel();
-            tokenSource = new CancellationTokenSource();
-            popupModal.ShowDownloadingModal("Updating map", () => tokenSource.Cancel());
-            oldLevelHash = beatmapLevel.GetBeatmapHash();
-            downloadedLevelHash = await beatmapLevel.UpdateBeatmap(tokenSource.Token, popupModal);
-            if (downloadedLevelHash != null)
+            downloadSource?.Cancel();
+            var source = downloadSource = new CancellationTokenSource();
+            popupModal.ShowDownloadingModal("Updating map", () =>
             {
-                songsLoadedSubscription?.Dispose();
-                songsLoadedSubscription = SongCoreLoaderEvents.SubscribeToSongsLoaded(OnSongsLoaded);
-                SongCore.Loader.Instance.RefreshSongs(false);
+                if (downloadSource == source)
+                    source.Cancel();
+            });
+            try
+            {
+                oldLevelHash = beatmapLevel.GetBeatmapHash();
+                var newHash = await beatmapLevel.UpdateBeatmap(source.Token, popupModal);
+                if (downloadSource != source || disposed)
+                    return;
+                downloadedLevelHash = newHash;
+                if (newHash != null && !source.IsCancellationRequested)
+                {
+                    var loader = SongCore.Loader.Instance;
+                    if (loader == null)
+                    {
+                        Plugin.Log.Warn("SongCore loader is unavailable after map download.");
+                        popupModal.HideModal();
+                        return;
+                    }
+                    songsLoadedSubscription?.Dispose();
+                    songsLoadedSubscription = SongCoreLoaderEvents.SubscribeToSongsLoaded(OnSongsLoaded);
+                    loader.RefreshSongs(false);
+                }
+                else
+                    popupModal.HideModal();
+            }
+            finally
+            {
+                if (downloadSource == source)
+                    downloadSource = null;
+                source.Dispose();
             }
         }
 
@@ -243,7 +298,10 @@ namespace BeatSaverUpdater.UI
             {
                 if (!string.IsNullOrEmpty(saveData.customLevelFolderInfo.folderPath))
                 {
-                    SongCore.Loader.Instance.DeleteSong(saveData.customLevelFolderInfo.folderPath);
+                    if (SongCore.Loader.Instance is { } loader)
+                        loader.DeleteSong(saveData.customLevelFolderInfo.folderPath);
+                    else
+                        Plugin.Log.Warn("SongCore loader is unavailable for old map deletion.");
                 }
             }
         }

@@ -66,7 +66,7 @@ namespace BeatSaverUpdater
                     var zip = await map.LatestVersion.DownloadZIP(token, progress).ConfigureAwait(false);
                     if (zip != null && !token.IsCancellationRequested)
                     {
-                        await ExtractZipAsync(zip, customSongsPath, FolderNameForBeatSaverMap(map)).ConfigureAwait(false);
+                        await ExtractZipAsync(zip, customSongsPath, FolderNameForBeatSaverMap(map), token).ConfigureAwait(false);
                         return map.LatestVersion.Hash;
                     }
 
@@ -74,7 +74,7 @@ namespace BeatSaverUpdater
                 }
                 catch (Exception e)
                 {
-                    if (!(e is TaskCanceledException))
+                    if (!(e is OperationCanceledException))
                     {
                         Plugin.Log.Error($"Failed to download Song {beatmapLevel}. Exception: {e}");
                     }
@@ -96,12 +96,12 @@ namespace BeatSaverUpdater
             return longFolderName + ")";
         }
 
-        private static async Task ExtractZipAsync(byte[] zip, string customSongsPath, string songName, bool overwrite = false)
+        private static async Task ExtractZipAsync(byte[] zip, string customSongsPath, string songName, CancellationToken token, bool overwrite = false)
         {
-            Stream zipStream = new MemoryStream(zip);
-            try
+            token.ThrowIfCancellationRequested();
+            using (Stream zipStream = new MemoryStream(zip))
+            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
             {
-                var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
                 var basePath = "";
                 basePath = string.Join("", songName.Split(Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).ToArray()));
                 var path = Path.Combine(customSongsPath, basePath);
@@ -119,6 +119,7 @@ namespace BeatSaverUpdater
                 {
                     foreach (var entry in archive.Entries)
                     {
+                        token.ThrowIfCancellationRequested();
                         if (!string.IsNullOrWhiteSpace(entry.Name) && entry.Name == entry.FullName)
                         {
                             var entryPath = Path.Combine(path, entry.Name); // Name instead of FullName for better security and because song zips don't have nested directories anyway
@@ -127,14 +128,7 @@ namespace BeatSaverUpdater
                         }
                     }
                 }).ConfigureAwait(false);
-                archive.Dispose();
             }
-            catch (Exception e)
-            {
-                Plugin.Log.Error($"Unable to extract ZIP! Exception: {e}");
-                return;
-            }
-            zipStream.Close();
         }
     }
 }

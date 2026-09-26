@@ -5,21 +5,19 @@ namespace BeatSaverUpdater
 {
     internal class SongDetailsWrapper
     {
-        private class AntiBox
-        {
-            public readonly SongDetails instance;
-
-            public AntiBox(SongDetails instance)
-            {
-                this.instance = instance;
-            }
-        }
-
-        private AntiBox? songDetails;
+        private Task<SongDetails>? initialization;
         public async Task<bool> SongExists(string hash)
         {
-            songDetails ??= new AntiBox(await SongDetails.Init());
-            return songDetails.instance.songs.FindByHash(hash, out var song);
+            try
+            {
+                var details = await (initialization ??= SongDetails.Init());
+                return details.songs.FindByHash(hash, out var song);
+            }
+            catch
+            {
+                initialization = null;
+                throw;
+            }
         }
     }
 }

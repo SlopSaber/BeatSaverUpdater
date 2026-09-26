@@ -1,5 +1,6 @@
 ﻿using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Reflection;
 using BeatSaberMarkupLanguage;
 using BeatSaberMarkupLanguage.Attributes;
@@ -31,6 +32,8 @@ namespace BeatSaverUpdater.UI
         private bool _checkboxActive = false;
 
         private LoadingControl? loadingControl;
+        private readonly Stopwatch progressClock = Stopwatch.StartNew();
+        private double lastProgress = -1;
 
         [UIComponent("modal")]
         private readonly RectTransform modalTransform = null!;
@@ -83,6 +86,8 @@ namespace BeatSaverUpdater.UI
         {
             Parse();
             modalTransform.localPosition = modalPosition;
+            lastProgress = -1;
+            progressClock.Restart();
 
             Text = text;
             SecondaryButtonText = secondaryButtonText;
@@ -113,6 +118,10 @@ namespace BeatSaverUpdater.UI
         {
             if (loadingControl != null && loadingControl.isActiveAndEnabled)
             {
+                if (value < 1 && lastProgress >= 0 && progressClock.ElapsedMilliseconds < 50 && value - lastProgress < 0.01)
+                    return;
+                lastProgress = value;
+                progressClock.Restart();
                 loadingControl.ShowDownloadingProgress(" ", (float)value);
             }
         }
