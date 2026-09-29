@@ -1,11 +1,11 @@
-﻿{
+{
     "$schema": "https://raw.githubusercontent.com/bsmg/BSIPA-MetadataFileSchema/master/Schema.json",
     "id": "BeatSaverUpdater",
     "name": "BeatSaverUpdater",
     "author": "PixelBoom, iza",
     "version": "1.2.14",
     "description": "Alerts you of updates to maps and updates them to the latest version.",
-    "gameVersion": "1.45.1",
+    "gameVersion": "1.45.2",
     "icon": "BeatSaverUpdater.Images.Logo.png",
     "dependsOn": {
         "BSIPA": "^4.3.4",

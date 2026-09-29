@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-    <GameDirectory>D:\BSManager\BSInstances\1.45.1</GameDirectory>
+    <GameDirectory>D:\BSManager\BSInstances\1.45.2</GameDirectory>
 		<TargetFramework>net48</TargetFramework>
 		<OutputType>Library</OutputType>
 		<LangVersion>10</LangVersion>
 		<LegatoSourceVersion>1.45.1</LegatoSourceVersion>
-		<LegatoTargetVersion>1.45.1</LegatoTargetVersion>
+		<LegatoTargetVersion>1.45.2</LegatoTargetVersion>
 		<LegatoReferenceRoot>$(GameDirectory)</LegatoReferenceRoot>
 		<Nullable>enable</Nullable>
 		<TreatWarningsAsErrors>false</TreatWarningsAsErrors>
@@ -130,7 +130,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="LegatoBS" Version="0.1.2-local.6" PrivateAssets="all" />
+		<PackageReference Include="LegatoBS" Version="0.1.2-local.7" PrivateAssets="all" />
 		<PackageReference Include="BeatSaberModdingTools.Tasks" Version="1.4.3">
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
