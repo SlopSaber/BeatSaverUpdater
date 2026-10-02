@@ -11,12 +11,12 @@ namespace BeatSaverUpdater.Migration
         {
             await UnityGame.SwitchToMainThreadAsync();
             token.ThrowIfCancellationRequested();
-            var playlists = BeatSaberPlaylistsLib.PlaylistManager.DefaultManager.GetAllPlaylists(true).ToArray();
             var preventDelete = false;
             var mapHash = oldMap.GetBeatmapHash();
             var newLevelId = newMap.levelID;
+            var scan = await BeatSaberPlaylistsLib.PlaylistManager.DefaultManager.GetAllPlaylistsAsync(true, token);
 
-            foreach (var playlist in playlists)
+            foreach (var playlist in scan.Playlists)
             {
                 token.ThrowIfCancellationRequested();
                 if (playlist.Any(s => s.Hash == mapHash))
