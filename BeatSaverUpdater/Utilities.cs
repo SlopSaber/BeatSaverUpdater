@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -7,14 +6,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using BeatSaverSharp;
 using BeatSaverSharp.Models;
-using Newtonsoft.Json.Linq;
-using SongCore;
+using IPA.Utilities;
 
 namespace BeatSaverUpdater
 {
     internal static class Utilities
     {
         private static BeatSaver? beatSaverInstance;
+        private static readonly SemaphoreSlim extractionGate = new(1, 1);
 
         public static string GetBeatmapHash(this BeatmapLevel beatmapLevel) =>
             SongCore.Collections.GetCustomLevelHash(beatmapLevel.levelID);
@@ -46,6 +45,7 @@ namespace BeatSaverUpdater
 
         public static async Task<string?> UpdateBeatmap(this BeatmapLevel beatmapLevel, CancellationToken token, IProgress<double> progress)
         {
+            await UnityGame.SwitchToMainThreadAsync();
             var songDownloaded = false;
             while (!songDownloaded)
             {
@@ -58,16 +58,21 @@ namespace BeatSaverUpdater
                     }
 
                     var customSongsPath = CustomLevelPathHelper.customLevelsDirectoryPath;
-                    if (!Directory.Exists(customSongsPath))
+                    var songName = FolderNameForBeatSaverMap(map);
+                    var latestVersion = map.LatestVersion;
+                    var latestHash = latestVersion.Hash;
+                    await Task.Run(() =>
                     {
-                        Directory.CreateDirectory(customSongsPath);
-                    }
+                        token.ThrowIfCancellationRequested();
+                        if (!Directory.Exists(customSongsPath))
+                            Directory.CreateDirectory(customSongsPath);
+                    }, token);
 
-                    var zip = await map.LatestVersion.DownloadZIP(token, progress).ConfigureAwait(false);
+                    var zip = await latestVersion.DownloadZIP(token, progress);
                     if (zip != null && !token.IsCancellationRequested)
                     {
-                        await ExtractZipAsync(zip, customSongsPath, FolderNameForBeatSaverMap(map), token).ConfigureAwait(false);
-                        return map.LatestVersion.Hash;
+                        await ExtractZipAsync(new ZipExtraction(zip, customSongsPath, songName, token));
+                        return latestHash;
                     }
 
                     songDownloaded = true;
@@ -96,38 +101,66 @@ namespace BeatSaverUpdater
             return longFolderName + ")";
         }
 
-        private static async Task ExtractZipAsync(byte[] zip, string customSongsPath, string songName, CancellationToken token, bool overwrite = false)
+        private static async Task ExtractZipAsync(ZipExtraction request)
         {
-            token.ThrowIfCancellationRequested();
-            using (Stream zipStream = new MemoryStream(zip))
-            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
+            await extractionGate.WaitAsync(request.Token).ConfigureAwait(false);
+            try
             {
-                var basePath = "";
-                basePath = string.Join("", songName.Split(Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).ToArray()));
+                await Task.Run(request.Extract, request.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                extractionGate.Release();
+            }
+        }
+
+        private sealed class ZipExtraction
+        {
+            private readonly byte[] zip;
+            private readonly string customSongsPath;
+            private readonly string songName;
+            public CancellationToken Token { get; }
+
+            public ZipExtraction(byte[] zip, string customSongsPath, string songName, CancellationToken token)
+            {
+                this.zip = zip;
+                this.customSongsPath = customSongsPath;
+                this.songName = songName;
+                Token = token;
+            }
+
+            public void Extract()
+            {
+                Token.ThrowIfCancellationRequested();
+                using Stream zipStream = new MemoryStream(zip);
+                using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
+                var basePath = string.Join("", songName.Split(Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).ToArray()));
                 var path = Path.Combine(customSongsPath, basePath);
 
-                if (!overwrite && Directory.Exists(path))
+                if (Directory.Exists(path))
                 {
                     var pathNum = 1;
-                    while (Directory.Exists(path + $" ({pathNum})")) ++pathNum;
+                    while (Directory.Exists(path + $" ({pathNum})"))
+                    {
+                        Token.ThrowIfCancellationRequested();
+                        ++pathNum;
+                    }
                     path += $" ({pathNum})";
                 }
 
+                Token.ThrowIfCancellationRequested();
                 if (!Directory.Exists(path))
                     Directory.CreateDirectory(path);
-                await Task.Run(() =>
+                foreach (var entry in archive.Entries)
                 {
-                    foreach (var entry in archive.Entries)
+                    Token.ThrowIfCancellationRequested();
+                    if (!string.IsNullOrWhiteSpace(entry.Name) && entry.Name == entry.FullName)
                     {
-                        token.ThrowIfCancellationRequested();
-                        if (!string.IsNullOrWhiteSpace(entry.Name) && entry.Name == entry.FullName)
-                        {
-                            var entryPath = Path.Combine(path, entry.Name); // Name instead of FullName for better security and because song zips don't have nested directories anyway
-                            if (overwrite || !File.Exists(entryPath)) // Either we're overwriting or there's no existing file
-                                entry.ExtractToFile(entryPath, overwrite);
-                        }
+                        var entryPath = Path.Combine(path, entry.Name); // Only root entries belong to a song archive.
+                        if (!File.Exists(entryPath))
+                            entry.ExtractToFile(entryPath, false);
                     }
-                }).ConfigureAwait(false);
+                }
             }
         }
     }

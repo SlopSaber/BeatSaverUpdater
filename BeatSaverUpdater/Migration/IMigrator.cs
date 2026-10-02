@@ -1,4 +1,7 @@
-﻿namespace BeatSaverUpdater.Migration
+﻿using System.Threading;
+using System.Threading.Tasks;
+
+namespace BeatSaverUpdater.Migration
 {
     internal interface IMigrator
     {
@@ -8,6 +11,6 @@
         /// <param name="oldMap"></param>
         /// <param name="newMap"></param>
         /// <returns>Returns true if old map should not be deleted</returns>
-        public bool MigrateMap(BeatmapLevel oldMap, BeatmapLevel newMap);
+        public Task<bool> MigrateMapAsync(BeatmapLevel oldMap, BeatmapLevel newMap, CancellationToken token);
     }
 }

@@ -23,6 +23,8 @@ namespace BeatSaverUpdater.UI
         private ClickableImage? image;
         private CancellationTokenSource? selectionSource;
         private CancellationTokenSource? downloadSource;
+        private CancellationTokenSource? migrationSource;
+        private Task? migrationTask;
         private IDisposable? songsLoadedSubscription;
         private bool disposed;
         private string? oldLevelHash;
@@ -68,6 +70,7 @@ namespace BeatSaverUpdater.UI
             standardLevelDetailViewController.didChangeContentEvent -= ContentChanged;
             selectionSource?.Cancel();
             downloadSource?.Cancel();
+            migrationSource?.Cancel();
             songsLoadedSubscription?.Dispose();
             if (image != null)
             {
@@ -208,6 +211,7 @@ namespace BeatSaverUpdater.UI
 
         private async void UpdateRequested(BeatmapLevel beatmapLevel)
         {
+            migrationSource?.Cancel();
             downloadSource?.Cancel();
             var source = downloadSource = new CancellationTokenSource();
             popupModal.ShowDownloadingModal("Updating map", () =>
@@ -218,7 +222,12 @@ namespace BeatSaverUpdater.UI
             try
             {
                 oldLevelHash = beatmapLevel.GetBeatmapHash();
-                var newHash = await beatmapLevel.UpdateBeatmap(source.Token, popupModal);
+                var progress = new Progress<double>(value =>
+                {
+                    if (!disposed && downloadSource == source && !source.IsCancellationRequested)
+                        popupModal.Report(value);
+                });
+                var newHash = await beatmapLevel.UpdateBeatmap(source.Token, progress);
                 if (downloadSource != source || disposed)
                     return;
                 downloadedLevelHash = newHash;
@@ -270,36 +279,65 @@ namespace BeatSaverUpdater.UI
             }
         }
 
-        private async void UpdateReferences(BeatmapLevel? oldLevel, BeatmapLevel downloadedLevel)
+        private void UpdateReferences(BeatmapLevel? oldLevel, BeatmapLevel downloadedLevel)
         {
-            if (oldLevel != null)
-            {
-                popupModal.ShowLoadingModal("Migrating References");
-                await Task.Run(() => UpdateReferencesAsync(oldLevel, downloadedLevel));
-                var downloadedLevelAfterUpdate = SongCore.Loader.GetLevelByHash(downloadedLevelHash ?? "");
-                if (downloadedLevelAfterUpdate != null)
-                {
-                    OpenMap(downloadedLevelAfterUpdate);
-                }
-            }
-            popupModal.HideModal();
+            if (disposed || migrationTask is { IsCompleted: false })
+                return;
+            var source = migrationSource = new CancellationTokenSource();
+            migrationTask = UpdateReferencesAsync(oldLevel, downloadedLevel, source);
         }
 
-        private void UpdateReferencesAsync(BeatmapLevel oldLevel, BeatmapLevel downloadedLevel)
+        private async Task UpdateReferencesAsync(BeatmapLevel? oldLevel, BeatmapLevel downloadedLevel, CancellationTokenSource source)
         {
+            try
+            {
+                if (oldLevel != null)
+                {
+                    var targetHash = downloadedLevel.GetBeatmapHash();
+                    popupModal.ShowLoadingModal("Migrating References");
+                    await MigrateReferencesAsync(oldLevel, downloadedLevel, source.Token);
+                    if (disposed || migrationSource != source || source.IsCancellationRequested)
+                        return;
+                    var downloadedLevelAfterUpdate = SongCore.Loader.GetLevelByHash(targetHash);
+                    if (downloadedLevelAfterUpdate != null)
+                        OpenMap(downloadedLevelAfterUpdate);
+                }
+                if (!disposed && migrationSource == source && !source.IsCancellationRequested)
+                    popupModal.HideModal();
+            }
+            catch (OperationCanceledException) when (source.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warn($"Migrating map references failed: {ex}");
+                if (!disposed && migrationSource == source && !source.IsCancellationRequested)
+                    popupModal.HideModal();
+            }
+            finally
+            {
+                if (migrationSource == source)
+                    migrationSource = null;
+                source.Dispose();
+            }
+        }
+
+        private async Task MigrateReferencesAsync(BeatmapLevel oldLevel, BeatmapLevel downloadedLevel, CancellationToken token)
+        {
+            await UnityGame.SwitchToMainThreadAsync();
             var preventDelete = false;
 
             foreach (var migrator in migrators)
             {
-                preventDelete = migrator.MigrateMap(oldLevel, downloadedLevel) || preventDelete;
+                token.ThrowIfCancellationRequested();
+                preventDelete = await migrator.MigrateMapAsync(oldLevel, downloadedLevel, token) || preventDelete;
             }
 
+            token.ThrowIfCancellationRequested();
             if (!preventDelete && customLevelLoader._loadedBeatmapSaveData.TryGetValue(oldLevel.levelID, out var saveData))
             {
                 if (!string.IsNullOrEmpty(saveData.customLevelFolderInfo.folderPath))
                 {
                     if (SongCore.Loader.Instance is { } loader)
-                        loader.DeleteSong(saveData.customLevelFolderInfo.folderPath);
+                        await loader.DeleteSongsAsync(new List<string> { saveData.customLevelFolderInfo.folderPath });
                     else
                         Plugin.Log.Warn("SongCore loader is unavailable for old map deletion.");
                 }

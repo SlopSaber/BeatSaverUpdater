@@ -1,4 +1,7 @@
-﻿namespace BeatSaverUpdater.Migration
+﻿using System.Threading;
+using System.Threading.Tasks;
+
+namespace BeatSaverUpdater.Migration
 {
     internal class FavouritesMigrator : IMigrator
     {
@@ -9,15 +12,16 @@
             this.playerDataModel = playerDataModel;
         }
 
-        public bool MigrateMap(BeatmapLevel oldMap, BeatmapLevel newMap)
+        public Task<bool> MigrateMapAsync(BeatmapLevel oldMap, BeatmapLevel newMap, CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
             if (playerDataModel.playerData.IsLevelUserFavorite(oldMap))
             {
                 playerDataModel.playerData.RemoveLevelFromFavorites(oldMap);
                 playerDataModel.playerData.AddLevelToFavorites(newMap);
                 playerDataModel.Save();
             }
-            return false;
+            return Task.FromResult(false);
         }
     }
 }
